@@ -192,7 +192,7 @@ class LKD(Algorithm):
                                    hparams)
         self.input_shape = input_shape
         self.num_classes = num_classes
-
+        self.num_domains = num_domains
         self.network = networks.WholeFish(input_shape, num_classes, hparams)
         self.optimizer = torch.optim.Adam(
             self.network.parameters(),
@@ -200,41 +200,45 @@ class LKD(Algorithm):
             weight_decay=self.hparams['weight_decay']
         )
         self.optimizer_inner_state = None
+        self.network_inner = []
+        self.optimizer_inner = []
 
-    def create_clone(self, device):
-        self.network_inner = networks.WholeFish(self.input_shape, self.num_classes, self.hparams,
-                                            weights=self.network.state_dict()).to(device)
-        self.optimizer_inner = torch.optim.Adam(
-            self.network_inner.parameters(),
-            lr=self.hparams["lr"],
-            weight_decay=self.hparams['weight_decay']
-        )
-        if self.optimizer_inner_state is not None:
-            self.optimizer_inner.load_state_dict(self.optimizer_inner_state)
+    def create_clone(self, device, n_domain):
+        self.network_inner = []
+        self.optimizer_inner = []
+        for i_domain in range(n_domain):
+            self.network_inner.append(networks.WholeFish(self.input_shape, self.num_classes, self.hparams,
+                                                weights=self.network.state_dict()).to(device))
+            self.optimizer_inner.append(torch.optim.Adam(
+                self.network_inner[i_domain].parameters(),
+                lr=self.hparams["lr"],
+                weight_decay=self.hparams['weight_decay']
+            ))
+            if self.optimizer_inner_state is not None:
+                self.optimizer_inner[i_domain].load_state_dict(self.optimizer_inner_state)
 
-    def fish(self, meta_weights, inner_weights, lr_meta):
-        meta_weights = ParamDict(meta_weights)
-        inner_weights = ParamDict(inner_weights)
-        meta_weights += lr_meta * (inner_weights - meta_weights)
+    def lkd(self, network_inner, lr_meta):
+        # predict
+        # get AUC
+        # knowledge distillation
+        meta_weights = 1
         return meta_weights
 
     def update(self, minibatches, unlabeled=None):
-        self.create_clone(minibatches[0][0].device)
+        self.create_clone(minibatches[0][0].device, n_domain = self.num_domains)
 
-        for x, y in minibatches:
-            loss = F.cross_entropy(self.network_inner(x), y)
-            self.optimizer_inner.zero_grad()
+        for i_domain, (x, y) in enumerate(minibatches):
+            loss = F.cross_entropy(self.network_inner[i_domain](x), y)
+            self.optimizer_inner[i_domain].zero_grad()
             loss.backward()
-            self.optimizer_inner.step()
+            self.optimizer_inner[i_domain].step()
 
-        self.optimizer_inner_state = self.optimizer_inner.state_dict()
-        meta_weights = self.fish(
-            meta_weights=self.network.state_dict(),
-            inner_weights=self.network_inner.state_dict(),
+        meta_weights = self.lkd(
+            network_inner=self.network_inner,
             lr_meta=self.hparams["meta_lr"]
         )
+        self.optimizer_inner_state = self.optimizer_inner.state_dict()
         self.network.reset_weights(meta_weights)
-
         return {'loss': loss.item()}
 
     def predict(self, x):
