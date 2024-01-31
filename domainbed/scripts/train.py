@@ -100,7 +100,7 @@ if __name__ == "__main__":
                                                args.test_envs, hparams)
     else:
         raise NotImplementedError
-
+    print(dataset.num_classes)
     # Split each env into an 'in-split' and an 'out-split'. We'll train on
     # each in-split except the test envs, and evaluate on all splits.
 
@@ -174,8 +174,6 @@ if __name__ == "__main__":
     algorithm_class = algorithms.get_algorithm_class(args.algorithm)
     algorithm = algorithm_class(dataset.input_shape, dataset.num_classes,
                                 len(dataset) - len(args.test_envs), hparams)
-
-    print(f"{len(dataset)} | {len(args.test_envs)}")
 
     if algorithm_dict is not None:
         algorithm.load_state_dict(algorithm_dict)

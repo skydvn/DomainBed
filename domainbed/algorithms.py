@@ -9,7 +9,7 @@ import copy
 import numpy as np
 from collections import OrderedDict
 
-from domainbed.utils.lkd_utils import CReliability
+from domainbed.utils.lkd_utils import CReliability, dataAlignment
 
 try:
     from backpack import backpack, extend
@@ -214,7 +214,6 @@ class LKD(Algorithm):
         self.network_inner = []
         self.optimizer_inner = []
         for i_domain in range(n_domain):
-            print(i_domain)
             self.network_inner.append(networks.WholeFish(self.input_shape, self.num_classes, self.hparams,
                                                          weights=self.network.state_dict()).to(device))
             self.optimizer_inner.append(torch.optim.Adam(
@@ -227,7 +226,7 @@ class LKD(Algorithm):
 
     def lkd(self, minibatches, network_inner, lr_meta):
         # joint data
-        device = minibatches.device
+        device = minibatches[0][0].device
         all_x = torch.cat([x for x, _ in minibatches])
         all_y = torch.cat([y for _, y in minibatches])
 
@@ -236,20 +235,54 @@ class LKD(Algorithm):
                                      weights=self.network.state_dict()).to(device)
         t_model = network_inner
         s_optimizer = torch.optim.Adam(
-            self.s_model.parameters(),
+            s_model.parameters(),
             lr=lr_meta,
             weight_decay=self.hparams['weight_decay']
         )
         loss_cls = torch.nn.BCELoss()
         loss_kld = torch.nn.KLDivLoss()
-        # predict
+        # Predict & AUC
         c_reliability = CReliability(data_x=all_x, data_y=all_y,
                                      num_domain=self.num_domains, num_classes=self.num_classes,
                                      teacher_model=t_model)
         beta = c_reliability.weightedClass()
         print(beta)
-        # get AUC
         # knowledge distillation
+        for epoch in range(g_config.distil_epochs):
+            loss = 0
+            x_batch, y_batch = all_x, all_y
+            y_batch = torch.argmax(y_batch, dim=1)
+
+            for i_domain in range(self.num_domains):
+                t_model[i_domain].eval()
+
+                # Get logits from teacher model (modify the model architecture to return logits if necessary)
+                with torch.no_grad():
+                    logits_teacher = t_model[i_domain](x_batch)
+
+                aligned_data_teacher, aligned_label_teacher = dataAlignment(pseudo_dataset, dataset.num_classes)
+                teacher_predictions = {}
+                for label in range(self.num_classes):
+                    aligned_data = torch.tensor(aligned_data_teacher[label]).reshape(-1, 28, 28, 1)
+                    with torch.no_grad():
+                        teacher_predictions[label] = teacher_model(aligned_data)
+
+                # Zero the gradients
+                s_optimizer.zero_grad()
+
+                # Forward pass of student and loss computation
+                for label in range(dataset.num_classes):
+                    student_predictions = student(aligned_data_teacher[label].reshape(-1, 28, 28, 1))
+                    student_loss = g_config.student_loss_fn(aligned_label_teacher[label], student_predictions)
+                    distillation_loss = beta[region][label] * distillation_loss_fn(
+                        torch.nn.functional.softmax(teacher_predictions[label] / 20, dim=1),
+                        torch.nn.functional.softmax(student_predictions / 20, dim=1))
+                    loss += g_config.alpha * student_loss + (1 - g_config.alpha) * distillation_loss
+
+                # Backward pass and optimize
+                loss.backward()
+                optimizer.step()
+
         meta_weights = 1
         return meta_weights
 
@@ -261,7 +294,6 @@ class LKD(Algorithm):
             self.optimizer_inner[i_domain].zero_grad()
             loss.backward()
             self.optimizer_inner[i_domain].step()
-        print(self.hparams)
         meta_weights = self.lkd(
             minibatches=minibatches,
             network_inner=self.network_inner,
