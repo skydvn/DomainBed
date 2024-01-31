@@ -6,12 +6,11 @@ from scipy.special import softmax
 
 
 class CReliability:
-    def __init__(self, base_samples_region_train, num_domain, num_classes, teacher_model):
-        self.base_samples_region_train = base_samples_region_train
+    def __init__(self, data_x, data_y, num_domain, num_classes, teacher_model):
         self.num_classes = num_classes
         # Data Preprocessing
-        self.processed_data_x = self.base_samples_region_train[0]
-        self.processed_data_y = self.base_samples_region_train[1]
+        self.processed_data_x = data_x
+        self.processed_data_y = data_y
 
         self.teacher_class_score = self.scoringAUC()
         self.num_domain = num_domain

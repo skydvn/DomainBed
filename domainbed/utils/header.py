@@ -35,4 +35,3 @@ from tensorflow.python.keras.constraints import maxnorm
 from tensorflow.keras.optimizers import SGD
 from tensorflow.python.keras.layers.convolutional import Conv2D, MaxPooling2D
 
-# sklearn
