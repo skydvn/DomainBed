@@ -215,10 +215,23 @@ class LKD(Algorithm):
                 weight_decay=self.hparams['weight_decay']
             ))
             if self.optimizer_inner_state is not None:
-                self.optimizer_inner[i_domain].load_state_dict(self.optimizer_inner_state)
+                self.optimizer_inner[i_domain] = self.optimizer_inner_state[i_domain]
 
-    def lkd(self, network_inner, lr_meta):
+    def lkd(self, network_inner, lr_meta, device):
+        # define student
+        s_model = networks.WholeFish(self.input_shape, self.num_classes, self.hparams,
+                                     weights=self.network.state_dict()).to(device)
+        t_model = network_inner
+        s_optimizer = torch.optim.Adam(
+                         self.s_model.parameters(),
+                         lr=self.hparams["lr"],
+                         weight_decay=self.hparams['weight_decay']
+                     )
+        loss_cls = torch.nn.BCELoss()
+        loss_kld = torch.nn.KLDivLoss()
         # predict
+        c_reliability = self.CReliability(self.data, self.num_domains, self.num_classes, t_model)      # Needed to be fixed
+        beta =
         # get AUC
         # knowledge distillation
         meta_weights = 1
@@ -235,9 +248,10 @@ class LKD(Algorithm):
 
         meta_weights = self.lkd(
             network_inner=self.network_inner,
-            lr_meta=self.hparams["meta_lr"]
+            lr_meta=self.hparams["meta_lr"],
+            device=minibatches[0][0].device
         )
-        self.optimizer_inner_state = self.optimizer_inner.state_dict()
+        self.optimizer_inner_state = self.optimizer_inner
         self.network.reset_weights(meta_weights)
         return {'loss': loss.item()}
 
