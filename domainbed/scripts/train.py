@@ -90,10 +90,12 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    if torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
+    # if torch.cuda.is_available():
+    #     device = "cuda"
+    # else:
+    #     device = "cpu"
+
+    device = "cpu"
 
     if args.dataset in vars(datasets):
         dataset = vars(datasets)[args.dataset](args.data_dir,

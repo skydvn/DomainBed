@@ -41,21 +41,14 @@ class CReliability:
 
 
 def dataAlignment(pseudo_dataset, num_classes):
-    # Init aligned_data_teacher
-    init_arr = np.array([])
-    aligned_data_teacher = {}
-    aligned_label_teacher = {}
-
-    for i in range(0, num_classes):
-        aligned_data_teacher[i] = init_arr
-
+    aligned_data_teacher = [torch.tensor([]) for _ in range(num_classes)]
+    aligned_label_teacher = [torch.tensor([]) for _ in range(num_classes)]
     for x, y_mu, y_true in pseudo_dataset:
-        for i in range(0, num_classes):
-            if i == y_mu:
-                if aligned_data_teacher[i].size == 0:
-                    aligned_data_teacher[i] = x
-                    aligned_label_teacher[i] = y_true
-                else:
-                    aligned_data_teacher[i] = np.vstack((aligned_data_teacher[i], x))
-                    aligned_label_teacher[i] = np.vstack((aligned_label_teacher[i], y_true))
+        if aligned_data_teacher[y_mu].nelement() == 0:
+            aligned_data_teacher[y_mu] = x.unsqueeze(0)  # Add a new axis to make it a 2D tensor
+            aligned_label_teacher[y_mu] = y_true.unsqueeze(0)
+        else:
+            aligned_data_teacher[y_mu] = torch.cat((aligned_data_teacher[y_mu], x.unsqueeze(0)), dim=0)
+            aligned_label_teacher[y_mu] = torch.cat((aligned_label_teacher[y_mu], y_true.unsqueeze(0)), dim=0)
+
     return aligned_data_teacher, aligned_label_teacher

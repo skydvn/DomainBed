@@ -206,6 +206,7 @@ class LKD(Algorithm):
             lr=self.hparams["lr"],
             weight_decay=self.hparams['weight_decay']
         )
+        self.alpha = self.hparams['alpha']
         self.optimizer_inner_state = None
         self.network_inner = []
         self.optimizer_inner = []
@@ -239,51 +240,60 @@ class LKD(Algorithm):
             lr=lr_meta,
             weight_decay=self.hparams['weight_decay']
         )
-        loss_cls = torch.nn.BCELoss()
+        loss_cls = torch.nn.CrossEntropyLoss()
         loss_kld = torch.nn.KLDivLoss()
         # Predict & AUC
         c_reliability = CReliability(data_x=all_x, data_y=all_y,
                                      num_domain=self.num_domains, num_classes=self.num_classes,
                                      teacher_model=t_model)
         beta = c_reliability.weightedClass()
-        print(beta)
+        distil_epochs = 2
         # knowledge distillation
-        for epoch in range(g_config.distil_epochs):
-            loss = 0
+        for epoch in range(distil_epochs):
+            loss = torch.tensor(0.0, device=device, requires_grad=True)
             x_batch, y_batch = all_x, all_y
-            y_batch = torch.argmax(y_batch, dim=1)
 
             for i_domain in range(self.num_domains):
                 t_model[i_domain].eval()
 
                 # Get logits from teacher model (modify the model architecture to return logits if necessary)
                 with torch.no_grad():
-                    logits_teacher = t_model[i_domain](x_batch)
+                    logits_predict = t_model[i_domain](x_batch)
+                softmax_predict = F.softmax(logits_predict)
+                rounded_predict = torch.argmax(softmax_predict, axis=1)
+                pseudo_dataset = list(zip(x_batch, rounded_predict, y_batch))
 
-                aligned_data_teacher, aligned_label_teacher = dataAlignment(pseudo_dataset, dataset.num_classes)
+                aligned_data_teacher, aligned_label_teacher = dataAlignment(pseudo_dataset, self.num_classes)
                 teacher_predictions = {}
                 for label in range(self.num_classes):
-                    aligned_data = torch.tensor(aligned_data_teacher[label]).reshape(-1, 28, 28, 1)
-                    with torch.no_grad():
-                        teacher_predictions[label] = teacher_model(aligned_data)
-
-                # Zero the gradients
-                s_optimizer.zero_grad()
+                    if aligned_label_teacher[label].nelement() != 0:
+                        aligned_data = torch.tensor(aligned_data_teacher[label]).reshape(-1, 1, 28, 28)
+                        with torch.no_grad():
+                            teacher_predictions[label] = t_model[i_domain](aligned_data)
+                    else:
+                        pass
 
                 # Forward pass of student and loss computation
-                for label in range(dataset.num_classes):
-                    student_predictions = student(aligned_data_teacher[label].reshape(-1, 28, 28, 1))
-                    student_loss = g_config.student_loss_fn(aligned_label_teacher[label], student_predictions)
-                    distillation_loss = beta[region][label] * distillation_loss_fn(
-                        torch.nn.functional.softmax(teacher_predictions[label] / 20, dim=1),
-                        torch.nn.functional.softmax(student_predictions / 20, dim=1))
-                    loss += g_config.alpha * student_loss + (1 - g_config.alpha) * distillation_loss
+                for label in range(self.num_classes):
+                    if aligned_label_teacher[label].nelement() != 0:
+                        print("true")
+                        student_predictions = s_model(aligned_data_teacher[label].reshape(-1, 1, 28, 28))
+                        s_predict = torch.argmax(student_predictions, dim=1)
 
-                # Backward pass and optimize
-                loss.backward()
-                optimizer.step()
+                        student_loss = loss_cls(s_predict.float(), aligned_label_teacher[label].float())
+                        distillation_loss = beta[i_domain][label] * loss_kld(
+                                                F.softmax(teacher_predictions[label] / 20, dim=1),
+                                                F.softmax(student_predictions / 20, dim=1))
+                        loss = loss + self.alpha * student_loss + (1 - self.alpha) * distillation_loss
+                    else:
+                        print("false")
+                        loss = loss + 0
+                    print(loss)
+            s_optimizer.zero_grad()
+            loss.backward()
+            s_optimizer.step()
 
-        meta_weights = 1
+        meta_weights = ParamDict(s_model.state_dict())
         return meta_weights
 
     def update(self, minibatches, unlabeled=None):
@@ -2040,7 +2050,8 @@ class Transfer(Algorithm):
 
 
 class AbstractCausIRL(ERM):
-    '''Abstract class for Causality based invariant representation learning algorithm from (https://arxiv.org/abs/2206.11646)'''
+    """Abstract class for Causality based invariant representation learning algorithm from (
+    https://arxiv.org/abs/2206.11646)"""
 
     def __init__(self, input_shape, num_classes, num_domains, hparams, gaussian):
         super(AbstractCausIRL, self).__init__(input_shape, num_classes, num_domains,
@@ -2058,8 +2069,9 @@ class AbstractCausIRL(ERM):
                           x2.transpose(-2, -1), alpha=-2).add_(x1_norm)
         return res.clamp_min_(1e-30)
 
-    def gaussian_kernel(self, x, y, gamma=[0.001, 0.01, 0.1, 1, 10, 100,
-                                           1000]):
+    def gaussian_kernel(self, x, y, gamma=None):
+        if gamma is None:
+            gamma = [0.001, 0.01, 0.1, 1, 10, 100, 1000]
         D = self.my_cdist(x, y)
         K = torch.zeros_like(D)
 
