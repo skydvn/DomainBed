@@ -527,6 +527,7 @@ class UKIE(Algorithm):
         self.aux_optimizer_inner = []
         self.ukie_optimizer_inner = []
         self.ukie_dog_optimizer_inner = []
+        self.u_count = 0
         self.all_x = None
         self.all_y = None
 
@@ -539,26 +540,26 @@ class UKIE(Algorithm):
                                                              weights=self.network.state_dict()).to(device))
                 self.aux_optimizer_inner.append(torch.optim.Adam(
                     [
-                        {'params': self.network[i_domain].inv.parameters()},
-                        {'params': self.network[i_domain].aux_classifier.parameters()}
+                        {'params': self.network_inner[i_domain].inv.parameters()},
+                        {'params': self.network_inner[i_domain].aux_classifier.parameters()}
                     ],
                     lr=self.hparams["lr"],
                     weight_decay=self.hparams['weight_decay']
                 ))
                 self.ukie_optimizer_inner.append(torch.optim.Adam(
                     [
-                        {'params': self.network[i_domain].encoder.parameters()},
-                        {'params': self.network[i_domain].inv.parameters()},
-                        {'params': self.network[i_domain].var.parameters()},
-                        {'params': self.network[i_domain].aux_decoder.parameters()},
+                        {'params': self.network_inner[i_domain].encoder.parameters()},
+                        {'params': self.network_inner[i_domain].inv.parameters()},
+                        {'params': self.network_inner[i_domain].var.parameters()},
+                        {'params': self.network_inner[i_domain].aux_decoder.parameters()},
                     ],
                     lr=self.hparams["lr"],
                     weight_decay=self.hparams['weight_decay']
                 ))
                 self.ukie_dog_optimizer_inner.append(torch.optim.Adam(
                     [
-                        {'params': self.network[i_domain].featurizer.parameters()},
-                        {'params': self.network[i_domain].classifier.parameters()},
+                        {'params': self.network_inner[i_domain].featurizer.parameters()},
+                        {'params': self.network_inner[i_domain].classifier.parameters()},
                     ],
                     lr=self.hparams["lr"],
                     weight_decay=self.hparams['weight_decay']

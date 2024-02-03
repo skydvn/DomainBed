@@ -70,11 +70,10 @@ def _hparams(algorithm, dataset, random_seed):
         _hparam('var_out_channel', 32, lambda r: r.choice([32, 32, 32]))
 
         # Aux Decoder settings
-        _hparam('aux_dec_hid_channel', 32, lambda r: r.choice([32, 32, 32]))
-        _hparam('aux_dec_out_channel', 32, lambda r: r.choice([32, 32, 32]))
+        _hparam('aux_dec_hid1_channel', 64, lambda r: r.choice([32, 32, 32]))
+        _hparam('aux_dec_hid2_channel', 32, lambda r: r.choice([32, 32, 32]))
         # Aux Classifier settings
         _hparam('aux_cls_hid_channel', 32, lambda r: r.choice([32, 32, 32]))
-        _hparam('aux_cls_out_channel', 32, lambda r: r.choice([32, 32, 32]))
 
     elif algorithm == 'CAG':
         _hparam('meta_lr', 0.5, lambda r: r.choice([0.05, 0.1, 0.5]))
