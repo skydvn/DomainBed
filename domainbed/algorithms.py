@@ -495,33 +495,71 @@ class UKIE(Algorithm):
         self.input_shape = input_shape
         self.num_classes = num_classes
         self.num_domains = num_domains
-        self.network = networks.WholeFish(input_shape, num_classes, hparams)
-        self.optimizer = torch.optim.Adam(
-            self.network.parameters(),
+        self.network = networks.WholeUKIE(input_shape, num_classes, hparams)
+        self.ukie_optimizer = torch.optim.Adam(
+            [
+                {'params': self.network.encoder.parameters()},
+                {'params': self.network.inv.parameters()},
+                {'params': self.network.var.parameters()},
+                {'params': self.network.aux_decoder.parameters()},
+            ],
             lr=self.hparams["lr"],
             weight_decay=self.hparams['weight_decay']
         )
-        self.lkd_epoch = self.hparams["cag_epoch"]
-        self.alpha = self.hparams['alpha']
-        self.lkd_update = self.hparams['cag_update']
+        self.aux_optimizer = torch.optim.Adam(
+            [
+                {'params': self.network.inv.parameters()},
+                {'params': self.network.aux_classifier.parameters()}
+            ],
+            lr=self.hparams["lr"],
+            weight_decay=self.hparams['weight_decay']
+        )
+        self.ukie_dog_optimizer = torch.optim.Adam(
+            [
+                {'params': self.network.featurizer.parameters()},
+                {'params': self.network.classifier.parameters()},
+            ],
+            lr=self.hparams["lr"],
+            weight_decay=self.hparams['weight_decay']
+        )
         self.optimizer_inner_state = None
         self.network_inner = []
-        self.optimizer_inner = []
-        self.u_count = 0
-        self.w_count = 0
-        self.lkd_bs = 64
+        self.aux_optimizer_inner = []
+        self.ukie_optimizer_inner = []
+        self.ukie_dog_optimizer_inner = []
         self.all_x = None
         self.all_y = None
 
     def create_clone(self, device, n_domain):
         if self.u_count == 0:
             self.network_inner = []
-            self.optimizer_inner = []
+            self.ukie_optimizer_inner = []
             for i_domain in range(n_domain):
-                self.network_inner.append(networks.WholeFish(self.input_shape, self.num_classes, self.hparams,
+                self.network_inner.append(networks.WholeUKIE(self.input_shape, self.num_classes, self.hparams,
                                                              weights=self.network.state_dict()).to(device))
-                self.optimizer_inner.append(torch.optim.Adam(
-                    self.network_inner[i_domain].parameters(),
+                self.aux_optimizer_inner.append(torch.optim.Adam(
+                    [
+                        {'params': self.network[i_domain].inv.parameters()},
+                        {'params': self.network[i_domain].aux_classifier.parameters()}
+                    ],
+                    lr=self.hparams["lr"],
+                    weight_decay=self.hparams['weight_decay']
+                ))
+                self.ukie_optimizer_inner.append(torch.optim.Adam(
+                    [
+                        {'params': self.network[i_domain].encoder.parameters()},
+                        {'params': self.network[i_domain].inv.parameters()},
+                        {'params': self.network[i_domain].var.parameters()},
+                        {'params': self.network[i_domain].aux_decoder.parameters()},
+                    ],
+                    lr=self.hparams["lr"],
+                    weight_decay=self.hparams['weight_decay']
+                ))
+                self.ukie_dog_optimizer_inner.append(torch.optim.Adam(
+                    [
+                        {'params': self.network[i_domain].featurizer.parameters()},
+                        {'params': self.network[i_domain].classifier.parameters()},
+                    ],
                     lr=self.hparams["lr"],
                     weight_decay=self.hparams['weight_decay']
                 ))
@@ -535,21 +573,12 @@ class UKIE(Algorithm):
 
     def update(self, minibatches, unlabeled=None):
         self.create_clone(minibatches[0][0].device, n_domain=self.num_domains)
-        print(self.u_count)
         for i_domain, (x, y) in enumerate(minibatches):
-            loss = F.cross_entropy(self.network_inner[i_domain](x), y)
-            self.optimizer_inner[i_domain].zero_grad()
-            loss.backward()
-            self.optimizer_inner[i_domain].step()
-            print(f"domain: {i_domain}|before: {loss}|after: {F.cross_entropy(self.network_inner[i_domain](x), y)}")
-
+            logits, rec, inv_enc, var_enc = self.network_inner[i_domain](x)
+            print(f"logits: {logits}| rec: {rec}| inv_enc: {inv_enc}| var_enc: {var_enc}")
         # After certain rounds, we lkd once
         if (self.u_count % self.lkd_update) == (self.lkd_update - 1):
-            self.cag(
-                minibatches=minibatches,
-                network_inner=self.network_inner,
-                lr_meta=self.hparams["meta_lr"],
-            )
+            pass
         else:
             pass
         self.u_count += 1

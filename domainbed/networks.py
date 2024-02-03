@@ -270,11 +270,11 @@ class FEncoder(nn.Module):
 
 class UKIEncoder(nn.Module):
     """ Encoder for UKIE """
-    def __init__(self, hparams):
+    def __init__(self, iv_flag, hparams):
         super(UKIEncoder, self).__init__()
         self.in_channel = hparams['f_out_channel']
         self.hid_channel = hparams['iv_hid_channel']
-        self.out_channel = hparams['iv_out_channel']
+        self.out_channel = hparams[f'{iv_flag}_out_channel']
         self.conv_in = nn.Sequential(
             nn.Conv2d(self.in_channel, self.hid_channel, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
@@ -302,7 +302,7 @@ class Aux_Decoder(nn.Module):
     """ Encoder for UKIE """
     def __init__(self, n_outputs, hparams):
         super(Aux_Decoder, self).__init__()
-        self.in_channel = hparams['iv_out_channel']
+        self.in_channel = int(hparams['inv_out_channel'] + hparams['var_out_channel'])
         self.hid1_channel = hparams['aux_dec_hid1_channel']
         self.hid2_channel = hparams['aux_dec_hid2_channel']
         self.out_channel = n_outputs[0]
@@ -336,25 +336,26 @@ class Aux_Decoder(nn.Module):
 
 class Aux_Classifier(nn.Module):
     """ Encoder for UKIE """
-    def __init__(self, hparams):
+    def __init__(self, input_shape, num_classes, hparams):
         super(Aux_Classifier, self).__init__()
-        self.in_channel = hparams['f_out_channel']
-        self.hid_channel = hparams['iv_hid_channel']
-        self.out_channel = hparams['iv_out_channel']
-        self.conv_in = nn.Sequential(
-            nn.Conv2d(self.in_channel, self.hid_channel, kernel_size=3, stride=2, padding=1),
+        self.in_channel = hparams['iv_out_channel']
+        self.hid_channel = hparams['aux_cls_hid_channel']
+        self.out_channel = hparams['aux_cls_out_channel']
+        self.up_in = nn.Sequential(
+            nn.Conv2d(in_channels=self.in_channel, out_channels=self.hid_channel, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.BatchNorm2d(self.hid_channel)
+            nn.BatchNorm2d(32),
         )
-        self.conv_hid = nn.Sequential(
-            nn.Conv2d(self.hid_channel, self.hid_channel, kernel_size=3, stride=2, padding=1),
+        self.up_hid = nn.Sequential(
+            nn.Conv2d(in_channels=self.hid_channel, out_channels=self.hid_channel, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.BatchNorm2d(self.hid_channel),
+            nn.BatchNorm2d(32),
         )
-        self.conv_out = nn.Sequential(
-            nn.Conv2d(self.hid_channel, self.out_channel, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm2d(self.out_channel),
+        self.lin_shape = self.get_lin_shape(torch.zeros(input_shape).unsqueeze(0))
+        self.up_out = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(self.lin_shape, num_classes),
+            nn.Softmax()
         )
 
     def forward(self, x):
@@ -364,16 +365,16 @@ class Aux_Classifier(nn.Module):
         return z
 
 
-class UKIE(nn.Module):
+class WholeUKIE(nn.Module):
     def __init__(self, input_shape, num_classes, hparams, weights=None):
-        super(UKIE, self).__init__()
+        super(WholeUKIE, self).__init__()
         self.encoder = FEncoder(input_shape, hparams)
-        self.inv = UKIEncoder(hparams)
-        self.var = UKIEncoder(hparams)
-        self.lat_shape = self.get_shape(torch.zeros(input_shape))
+        self.inv = UKIEncoder(iv_flag="inv", hparams=hparams)
+        self.var = UKIEncoder(iv_flag="var", hparams=hparams)
+        self.inv_shape, self.var_shape = self.get_shape(torch.zeros(input_shape).unsqueeze(0))
         self.aux_decoder = Aux_Decoder(input_shape, hparams)
-        self.aux_classifier = Aux_Classifier(hparams)
-        self.featurizer = Featurizer(self.lat_shape, hparams)
+        self.aux_classifier = Aux_Classifier(self.inv_shape, num_classes, hparams)
+        self.featurizer = Featurizer((self.inv_shape + self.var_shape), hparams)
         self.classifier = Classifier(
             self.featurizer.n_outputs,
             num_classes,
@@ -405,7 +406,10 @@ class UKIE(nn.Module):
 
     def get_shape(self, x):
         enc = self.encoder(x)  # dimension complexity reduction
+        print(enc.size())
         inv_enc = self.inv(enc)  # invariant extractor
         var_enc = self.var(enc)  # variant extractor
+        print(inv_enc.size())
+        print(var_enc.size())
         lat = torch.cat((inv_enc, var_enc), dim=1)
         return lat.size()
