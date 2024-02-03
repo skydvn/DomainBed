@@ -53,7 +53,26 @@ def _hparams(algorithm, dataset, random_seed):
 
     elif algorithm == 'LKD':
         _hparam('meta_lr', 0.5, lambda r: r.choice([0.05, 0.1, 0.5]))
+        _hparam('alpha', 0.05, lambda r: r.choice([0.01, 0.05, 0.1]))
+        _hparam('lkd_warmup', 100, lambda r: r.choice([1, 5, 10]))
+        _hparam('lkd_update', 60, lambda r: r.choice([1, 5, 10]))
+        _hparam('lkd_epoch', 50, lambda r: r.choice([10, 20, 30]))
+
+    elif algorithm == 'UKIE':
+        _hparam('meta_lr', 0.1, lambda r: r.choice([0.05, 0.1, 0.5]))
+        # Feature Encoder settings
+        _hparam('f_hid1_channel', 32, lambda r: r.choice([32, 32, 32]))
+        _hparam('f_hid2_channel', 64, lambda r: r.choice([64, 64, 64]))
+        _hparam('f_out_channel', 64, lambda r: r.choice([64, 64, 64]))
+        # Inv-Var Encoder settings
+        _hparam('iv_hid_channel', 32, lambda r: r.choice([32, 32, 32]))
+        _hparam('iv_out_channel', 32, lambda r: r.choice([32, 32, 32]))
+
+    elif algorithm == 'CAG':
+        _hparam('meta_lr', 0.5, lambda r: r.choice([0.05, 0.1, 0.5]))
         _hparam('alpha', 0.01, lambda r: r.choice([0.01, 0.05, 0.1]))
+        _hparam('cag_update', 30, lambda r: r.choice([1, 5, 10]))
+        _hparam('cag_epoch', 15, lambda r: r.choice([10, 20, 30]))
 
     elif algorithm == "RSC":
         _hparam('rsc_f_drop_factor', 1 / 3, lambda r: r.uniform(0, 0.5))
@@ -149,7 +168,7 @@ def _hparams(algorithm, dataset, random_seed):
     # below corresponds to exactly one hparam. Avoid nested conditionals.
 
     if dataset in SMALL_IMAGES:
-        _hparam('lr', 1e-3, lambda r: 10 ** r.uniform(-4.5, -2.5))
+        _hparam('lr', 1e-2, lambda r: 10 ** r.uniform(-4.5, -2.5))
     else:
         _hparam('lr', 5e-5, lambda r: 10 ** r.uniform(-5, -3.5))
 

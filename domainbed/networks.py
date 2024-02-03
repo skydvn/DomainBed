@@ -35,6 +35,7 @@ def remove_batch_norm_from_resnet(model):
 
 class Identity(nn.Module):
     """An identity layer"""
+
     def __init__(self):
         super(Identity, self).__init__()
 
@@ -44,13 +45,14 @@ class Identity(nn.Module):
 
 class MLP(nn.Module):
     """Just  an MLP"""
+
     def __init__(self, n_inputs, n_outputs, hparams):
         super(MLP, self).__init__()
         self.input = nn.Linear(n_inputs, hparams['mlp_width'])
         self.dropout = nn.Dropout(hparams['mlp_dropout'])
         self.hiddens = nn.ModuleList([
             nn.Linear(hparams['mlp_width'], hparams['mlp_width'])
-            for _ in range(hparams['mlp_depth']-2)])
+            for _ in range(hparams['mlp_depth'] - 2)])
         self.output = nn.Linear(hparams['mlp_width'], n_outputs)
         self.n_outputs = n_outputs
 
@@ -68,6 +70,7 @@ class MLP(nn.Module):
 
 class ResNet(torch.nn.Module):
     """ResNet with the softmax chopped off and the batchnorm frozen"""
+
     def __init__(self, input_shape, hparams):
         super(ResNet, self).__init__()
         if hparams['resnet18']:
@@ -226,3 +229,183 @@ class WholeFish(nn.Module):
 
     def forward(self, x):
         return self.net(x)
+
+
+class FEncoder(nn.Module):
+    """ Encoder for UKIE """
+    def __init__(self, n_inputs, hparams):
+        super(FEncoder, self).__init__()
+        self.in_channel = n_inputs[0]
+        self.hid1_channel = hparams['f_hid1_channel']
+        self.hid2_channel = hparams['f_hid2_channel']
+        self.out_channel = hparams['f_out_channel']
+        self.conv_in = nn.Sequential(
+            nn.Conv2d(self.in_channel, self.hid1_channel, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.hid1_channel)
+        )
+        self.conv_hid1 = nn.Sequential(
+            nn.Conv2d(self.hid1_channel, self.hid2_channel, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.hid2_channel),
+        )
+        self.conv_hid2 = nn.Sequential(
+            nn.Conv2d(self.hid2_channel, self.hid2_channel, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.hid2_channel),
+        )
+        self.conv_out = nn.Sequential(
+            nn.Conv2d(self.hid2_channel, self.out_channel, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.out_channel),
+        )
+
+    def forward(self, x):
+        z = self.conv_in(x)
+        z = self.conv_hid1(z)
+        z = self.conv_hid2(z)
+        z = self.conv_out(z)
+        return z
+
+
+class UKIEncoder(nn.Module):
+    """ Encoder for UKIE """
+    def __init__(self, hparams):
+        super(UKIEncoder, self).__init__()
+        self.in_channel = hparams['f_out_channel']
+        self.hid_channel = hparams['iv_hid_channel']
+        self.out_channel = hparams['iv_out_channel']
+        self.conv_in = nn.Sequential(
+            nn.Conv2d(self.in_channel, self.hid_channel, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.hid_channel)
+        )
+        self.conv_hid = nn.Sequential(
+            nn.Conv2d(self.hid_channel, self.hid_channel, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.hid_channel),
+        )
+        self.conv_out = nn.Sequential(
+            nn.Conv2d(self.hid_channel, self.out_channel, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.out_channel),
+        )
+
+    def forward(self, x):
+        z = self.conv_in(x)
+        z = self.conv_hid(z)
+        z = self.conv_out(z)
+        return z
+
+
+class Aux_Decoder(nn.Module):
+    """ Encoder for UKIE """
+    def __init__(self, n_outputs, hparams):
+        super(Aux_Decoder, self).__init__()
+        self.in_channel = hparams['iv_out_channel']
+        self.hid1_channel = hparams['aux_dec_hid1_channel']
+        self.hid2_channel = hparams['aux_dec_hid2_channel']
+        self.out_channel = n_outputs[0]
+        self.up_in = nn.Sequential(
+            nn.ConvTranspose2d(self.in_channel, self.hid1_channel, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(64),
+        )
+        self.up_hid1 = nn.Sequential(
+            nn.Conv2d(self.hid1_channel, self.hid1_channel, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.hid_channel),
+        )
+        self.up_hid2 = nn.Sequential(
+            nn.Conv2d(self.hid1_channel, self.hid2_channel, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.hid_channel),
+        )
+        self.up_out = nn.Sequential(
+            nn.ConvTranspose2d(self.hid2_channel, self.out_channel, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.SELU(),
+        )
+
+    def forward(self, z):
+        z = self.up_in(z)
+        z = self.up_hid1(z)
+        z = self.up_hid2(z)
+        x = self.up_out(z)
+        return x
+
+
+class Aux_Classifier(nn.Module):
+    """ Encoder for UKIE """
+    def __init__(self, hparams):
+        super(Aux_Classifier, self).__init__()
+        self.in_channel = hparams['f_out_channel']
+        self.hid_channel = hparams['iv_hid_channel']
+        self.out_channel = hparams['iv_out_channel']
+        self.conv_in = nn.Sequential(
+            nn.Conv2d(self.in_channel, self.hid_channel, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.hid_channel)
+        )
+        self.conv_hid = nn.Sequential(
+            nn.Conv2d(self.hid_channel, self.hid_channel, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.hid_channel),
+        )
+        self.conv_out = nn.Sequential(
+            nn.Conv2d(self.hid_channel, self.out_channel, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(self.out_channel),
+        )
+
+    def forward(self, x):
+        z = self.conv_in(x)
+        z = self.conv_hid(z)
+        z = self.conv_out(z)
+        return z
+
+
+class UKIE(nn.Module):
+    def __init__(self, input_shape, num_classes, hparams, weights=None):
+        super(UKIE, self).__init__()
+        self.encoder = FEncoder(input_shape, hparams)
+        self.inv = UKIEncoder(hparams)
+        self.var = UKIEncoder(hparams)
+        self.lat_shape = self.get_shape(torch.zeros(input_shape))
+        self.aux_decoder = Aux_Decoder(input_shape, hparams)
+        self.aux_classifier = Aux_Classifier(hparams)
+        self.featurizer = Featurizer(self.lat_shape, hparams)
+        self.classifier = Classifier(
+            self.featurizer.n_outputs,
+            num_classes,
+            hparams['nonlinear_classifier'])
+        self.net = nn.Sequential(
+            self.featurizer, self.classifier
+        )
+        if weights is not None:
+            self.load_state_dict(copy.deepcopy(weights))
+
+    def reset_weights(self, weights):
+        self.load_state_dict(copy.deepcopy(weights))
+
+    def forward(self, x):
+        enc = self.encoder(x)              # Dimension complexity reduction
+        inv_enc = self.inv(enc)            # Invariant extractor
+        var_enc = self.var(enc)            # Variant extractor
+        lat = torch.cat((inv_enc, var_enc), dim=1)
+        rec = self.aux_decoder(lat)            # Auxiliary Decoder
+        logits = self.aux_classifier(inv_enc)  # Auxiliary Classifier
+        return logits, rec, inv_enc, var_enc
+
+    def predict(self, x):
+        enc = self.encoder(x)  # dimension complexity reduction
+        inv_enc = self.inv(enc)  # invariant extractor
+        var_enc = self.var(enc)  # variant extractor
+        lat = torch.cat((inv_enc, var_enc), dim=1)
+        return self.net(lat)
+
+    def get_shape(self, x):
+        enc = self.encoder(x)  # dimension complexity reduction
+        inv_enc = self.inv(enc)  # invariant extractor
+        var_enc = self.var(enc)  # variant extractor
+        lat = torch.cat((inv_enc, var_enc), dim=1)
+        return lat.size()

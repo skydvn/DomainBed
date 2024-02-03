@@ -90,19 +90,17 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    # if torch.cuda.is_available():
-    #     device = "cuda"
-    # else:
-    #     device = "cpu"
-
-    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
 
     if args.dataset in vars(datasets):
         dataset = vars(datasets)[args.dataset](args.data_dir,
                                                args.test_envs, hparams)
     else:
         raise NotImplementedError
-    print(dataset.num_classes)
+
     # Split each env into an 'in-split' and an 'out-split'. We'll train on
     # each in-split except the test envs, and evaluate on all splits.
 

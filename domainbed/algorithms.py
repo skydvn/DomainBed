@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.autograd as autograd
+from torch.utils.data import TensorDataset, DataLoader
 
 import copy
 import numpy as np
@@ -24,8 +25,9 @@ from domainbed.lib.misc import (
 )
 
 ALGORITHMS = [
-    'LKD',  # Label-driven KD
-    'CAG',  # CA Grad
+    'LKD',   # Label-driven KD
+    'CAG',   # CA Grad
+    'UKIE',  # Unbiased Knowledge Invariant Extractor
     'ERM',
     'Fish',
     'IRM',
@@ -206,30 +208,55 @@ class LKD(Algorithm):
             lr=self.hparams["lr"],
             weight_decay=self.hparams['weight_decay']
         )
+        self.lkd_epoch = self.hparams["lkd_epoch"]
         self.alpha = self.hparams['alpha']
+        self.lkd_update = self.hparams['lkd_update']
+        self.lkd_warmup = self.hparams['lkd_warmup']
         self.optimizer_inner_state = None
         self.network_inner = []
         self.optimizer_inner = []
+        self.w_count = 0
+        self.u_count = 0
+        self.lkd_bs = 64
+        self.all_x = None
+        self.all_y = None
 
     def create_clone(self, device, n_domain):
-        self.network_inner = []
-        self.optimizer_inner = []
-        for i_domain in range(n_domain):
-            self.network_inner.append(networks.WholeFish(self.input_shape, self.num_classes, self.hparams,
-                                                         weights=self.network.state_dict()).to(device))
-            self.optimizer_inner.append(torch.optim.Adam(
-                self.network_inner[i_domain].parameters(),
-                lr=self.hparams["lr"],
-                weight_decay=self.hparams['weight_decay']
-            ))
-            if self.optimizer_inner_state is not None:
-                self.optimizer_inner[i_domain] = self.optimizer_inner_state[i_domain]
+        if self.u_count == 0:
+            self.network_inner = []
+            self.optimizer_inner = []
+            for i_domain in range(n_domain):
+                self.network_inner.append(networks.WholeFish(self.input_shape, self.num_classes, self.hparams,
+                                                             weights=self.network.state_dict()).to(device))
+                self.optimizer_inner.append(torch.optim.Adam(
+                    self.network_inner[i_domain].parameters(),
+                    lr=self.hparams["lr"],
+                    weight_decay=self.hparams['weight_decay']
+                ))
+                if self.optimizer_inner_state is not None:
+                    self.optimizer_inner[i_domain].load_state_dict(self.optimizer_inner_state[i_domain])
+        elif (self.u_count % self.lkd_update) == self.lkd_update:
+            # After aggregation (self.lkd_update-1),
+            self.network_inner = []
+            self.optimizer_inner = []
+            for i_domain in range(n_domain):
+                self.network_inner.append(networks.WholeFish(self.input_shape, self.num_classes, self.hparams,
+                                                             weights=self.network.state_dict()).to(device))
+                self.optimizer_inner.append(torch.optim.Adam(
+                    self.network_inner[i_domain].parameters(),
+                    lr=self.hparams["lr"],
+                    weight_decay=self.hparams['weight_decay']
+                ))
+                if self.optimizer_inner_state is not None:
+                    self.optimizer_inner[i_domain].load_state_dict(self.optimizer_inner_state[i_domain])
+        else:
+            pass
 
     def lkd(self, minibatches, network_inner, lr_meta):
         # joint data
         device = minibatches[0][0].device
-        all_x = torch.cat([x for x, _ in minibatches])
-        all_y = torch.cat([y for _, y in minibatches])
+        dataset = TensorDataset(self.all_x, self.all_y)
+        lkd_loader = DataLoader(dataset, batch_size=self.lkd_bs, shuffle=True)
 
         # define student
         s_model = networks.WholeFish(self.input_shape, self.num_classes, self.hparams,
@@ -240,77 +267,292 @@ class LKD(Algorithm):
             lr=lr_meta,
             weight_decay=self.hparams['weight_decay']
         )
-        loss_cls = torch.nn.CrossEntropyLoss()
-        loss_kld = torch.nn.KLDivLoss()
+        loss_cls = torch.nn.CrossEntropyLoss(reduction="mean")
+        loss_kld = torch.nn.KLDivLoss(reduction="batchmean")
         # Predict & AUC
-        c_reliability = CReliability(data_x=all_x, data_y=all_y,
+        c_reliability = CReliability(data_loader=lkd_loader,
                                      num_domain=self.num_domains, num_classes=self.num_classes,
                                      teacher_model=t_model)
         beta = c_reliability.weightedClass()
-        distil_epochs = 2
         # knowledge distillation
-        for epoch in range(distil_epochs):
-            loss = torch.tensor(0.0, device=device, requires_grad=True)
-            x_batch, y_batch = all_x, all_y
+        for epoch in range(self.lkd_epoch):
+            for i_batch, (x_batch, y_batch) in enumerate(lkd_loader):
+                loss = torch.tensor(0.0, device=device, requires_grad=True)
+                for i_domain in range(self.num_domains):
+                    t_model[i_domain].eval()
 
-            for i_domain in range(self.num_domains):
-                t_model[i_domain].eval()
+                    # Get logits from teacher model (modify the model architecture to return logits if necessary)
+                    with torch.no_grad():
+                        logits_predict = t_model[i_domain](x_batch)
+                    softmax_predict = F.softmax(logits_predict, dim=1)
+                    rounded_predict = torch.argmax(softmax_predict, dim=1)
+                    pseudo_dataset = list(zip(x_batch, rounded_predict, y_batch))
 
-                # Get logits from teacher model (modify the model architecture to return logits if necessary)
+                    aligned_data_teacher, aligned_label_teacher = dataAlignment(pseudo_dataset, self.num_classes)
+                    teacher_predictions = {}
+                    for label in range(self.num_classes):
+                        if aligned_label_teacher[label].nelement() != 0:
+                            aligned_data = aligned_data_teacher[label].detach().reshape(-1, 1, 28, 28)
+                            with torch.no_grad():
+                                teacher_predictions[label] = t_model[i_domain](aligned_data)
+                        else:
+                            pass
+
+                    # Forward pass of student and loss computation
+                    for label in range(self.num_classes):
+                        if aligned_label_teacher[label].nelement() != 0:
+                            student_predictions = s_model(aligned_data_teacher[label].reshape(-1, 1, 28, 28))
+                            s_predict = torch.argmax(student_predictions, dim=1)
+
+                            student_loss = loss_cls(s_predict.float(), aligned_label_teacher[label].float())
+                            distillation_loss = beta[i_domain][label] * loss_kld(
+                                F.softmax(teacher_predictions[label] / 20, dim=1),
+                                F.softmax(student_predictions / 20, dim=1))
+                            loss = loss + self.alpha * student_loss + (1 - self.alpha) * distillation_loss
+                        else:
+                            loss = loss + 0
+                s_optimizer.zero_grad()
+                loss.backward()
+                s_optimizer.step()
+
+        accuracy_per_domain = []
+        for i_domain in range(self.num_domains):
+            accuracy = 0
+            for _, (x_batch, y_batch) in enumerate(lkd_loader):
                 with torch.no_grad():
                     logits_predict = t_model[i_domain](x_batch)
-                softmax_predict = F.softmax(logits_predict)
-                rounded_predict = torch.argmax(softmax_predict, axis=1)
-                pseudo_dataset = list(zip(x_batch, rounded_predict, y_batch))
+                softmax_predict = F.softmax(logits_predict, dim=1)
+                rounded_predict = torch.argmax(softmax_predict, dim=1)
 
-                aligned_data_teacher, aligned_label_teacher = dataAlignment(pseudo_dataset, self.num_classes)
-                teacher_predictions = {}
-                for label in range(self.num_classes):
-                    if aligned_label_teacher[label].nelement() != 0:
-                        aligned_data = torch.tensor(aligned_data_teacher[label]).reshape(-1, 1, 28, 28)
-                        with torch.no_grad():
-                            teacher_predictions[label] = t_model[i_domain](aligned_data)
-                    else:
-                        pass
+                correct_predictions = torch.sum(rounded_predict == y_batch)
+                accuracy += correct_predictions.item() / len(y_batch)
+            accuracy_per_domain.append(accuracy / len(lkd_loader))
 
-                # Forward pass of student and loss computation
-                for label in range(self.num_classes):
-                    if aligned_label_teacher[label].nelement() != 0:
-                        print("true")
-                        student_predictions = s_model(aligned_data_teacher[label].reshape(-1, 1, 28, 28))
-                        s_predict = torch.argmax(student_predictions, dim=1)
+        accuracy = 0
+        for _, (x_batch, y_batch) in enumerate(lkd_loader):
+            with torch.no_grad():
+                logits_predict = s_model(x_batch)
+            softmax_predict = F.softmax(logits_predict, dim=1)
+            rounded_predict = torch.argmax(softmax_predict, dim=1)
 
-                        student_loss = loss_cls(s_predict.float(), aligned_label_teacher[label].float())
-                        distillation_loss = beta[i_domain][label] * loss_kld(
-                                                F.softmax(teacher_predictions[label] / 20, dim=1),
-                                                F.softmax(student_predictions / 20, dim=1))
-                        loss = loss + self.alpha * student_loss + (1 - self.alpha) * distillation_loss
-                    else:
-                        print("false")
-                        loss = loss + 0
-                    print(loss)
-            s_optimizer.zero_grad()
-            loss.backward()
-            s_optimizer.step()
+            correct_predictions = torch.sum(rounded_predict == y_batch)
+            accuracy += correct_predictions.item() / len(y_batch)
+        accuracy_per_domain.append(accuracy / len(lkd_loader))
+
+        print("Accuracy per domain:", accuracy_per_domain)
 
         meta_weights = ParamDict(s_model.state_dict())
         return meta_weights
 
-    def update(self, minibatches, unlabeled=None):
-        self.create_clone(minibatches[0][0].device, n_domain=self.num_domains)
+    def lkd_fill_data(self, minibatches):
+        if self.all_x is None:
+            self.all_x = torch.cat([x for x, _ in minibatches])
+            self.all_y = torch.cat([y for _, y in minibatches])
+        else:
+            temp_all_x = torch.cat([x for x, _ in minibatches])
+            temp_all_y = torch.cat([y for _, y in minibatches])
+            self.all_x = torch.cat([self.all_x, temp_all_x])
+            self.all_y = torch.cat([self.all_y, temp_all_y])
 
+    def lkd_flush_data(self):
+        self.all_x = None
+        self.all_y = None
+
+    def normal_aggregate(self, meta_network, network_inner, lr_meta):
+        meta_weights = ParamDict(meta_network)
+        sum_of_diffs = {name: torch.zeros_like(param) for name, param in meta_weights.items()}
+        for i in range(self.num_domains):
+            inner_weights = network_inner[i].state_dict()
+            for name, param in inner_weights.items():
+                sum_of_diffs[name] += (param - meta_weights[name])
+        avg_diffs = {name: diff / self.num_domains for name, diff in sum_of_diffs.items()}
+        updated_weights = {name: param + lr_meta * avg_diffs[name] for name, param in meta_weights.items()}
+        return updated_weights
+
+    def update(self, minibatches, unlabeled=None):
+        device = minibatches[0][0].device
+        self.create_clone(device, n_domain=self.num_domains)
         for i_domain, (x, y) in enumerate(minibatches):
             loss = F.cross_entropy(self.network_inner[i_domain](x), y)
             self.optimizer_inner[i_domain].zero_grad()
             loss.backward()
             self.optimizer_inner[i_domain].step()
-        meta_weights = self.lkd(
-            minibatches=minibatches,
-            network_inner=self.network_inner,
-            lr_meta=self.hparams["meta_lr"],
-        )
-        self.optimizer_inner_state = self.optimizer_inner
+            # print(f"domain: {i_domain}|before: {loss}|after: {F.cross_entropy(self.network_inner[i_domain](x), y)}")
+
+        # After certain rounds, we lkd once
+        if (self.u_count % self.lkd_update) == (self.lkd_update - 1):
+            meta_weights = self.lkd(
+                minibatches=minibatches,
+                network_inner=self.network_inner,
+                lr_meta=self.hparams["meta_lr"],
+            )
+            self.lkd_flush_data()
+            self.optimizer_inner_state = self.optimizer_inner
+        else:
+            meta_weights = self.normal_aggregate(
+                meta_network=self.network.state_dict(),
+                network_inner=self.network_inner,
+                lr_meta=self.hparams["meta_lr"]
+            )
+            self.lkd_fill_data(
+                minibatches=minibatches,
+            )
         self.network.reset_weights(meta_weights)
+        self.w_count += 1
+        if self.w_count >= self.lkd_warmup:
+            self.u_count += 1
+        return {'loss': loss.item()}
+
+    def predict(self, x):
+        return self.network(x)
+
+
+class CAG(Algorithm):
+    """
+    Implementation of LKD, as seen in Label-driven Knowledge Distillation.
+    No uda_device allowed in this algorithm currently.
+    """
+
+    def __init__(self, input_shape, num_classes, num_domains, hparams):
+        super(CAG, self).__init__(input_shape, num_classes, num_domains,
+                                  hparams)
+        self.input_shape = input_shape
+        self.num_classes = num_classes
+        self.num_domains = num_domains
+        self.network = networks.WholeFish(input_shape, num_classes, hparams)
+        self.optimizer = torch.optim.Adam(
+            self.network.parameters(),
+            lr=self.hparams["lr"],
+            weight_decay=self.hparams['weight_decay']
+        )
+        self.lkd_epoch = self.hparams["cag_epoch"]
+        self.alpha = self.hparams['alpha']
+        self.lkd_update = self.hparams['cag_update']
+        self.optimizer_inner_state = None
+        self.network_inner = []
+        self.optimizer_inner = []
+        self.u_count = 0
+        self.w_count = 0
+        self.lkd_bs = 64
+        self.all_x = None
+        self.all_y = None
+
+    def create_clone(self, device, n_domain):
+        if self.u_count == 0:
+            self.network_inner = []
+            self.optimizer_inner = []
+            for i_domain in range(n_domain):
+                self.network_inner.append(networks.WholeFish(self.input_shape, self.num_classes, self.hparams,
+                                                             weights=self.network.state_dict()).to(device))
+                self.optimizer_inner.append(torch.optim.Adam(
+                    self.network_inner[i_domain].parameters(),
+                    lr=self.hparams["lr"],
+                    weight_decay=self.hparams['weight_decay']
+                ))
+                if self.optimizer_inner_state is not None:
+                    self.optimizer_inner[i_domain].load_state_dict(self.optimizer_inner_state[i_domain])
+        else:
+            pass
+
+    def cag(self, minibatches, network_inner, lr_meta):
+        pass
+
+    def update(self, minibatches, unlabeled=None):
+        self.create_clone(minibatches[0][0].device, n_domain=self.num_domains)
+        print(self.u_count)
+        for i_domain, (x, y) in enumerate(minibatches):
+            loss = F.cross_entropy(self.network_inner[i_domain](x), y)
+            self.optimizer_inner[i_domain].zero_grad()
+            loss.backward()
+            self.optimizer_inner[i_domain].step()
+            print(f"domain: {i_domain}|before: {loss}|after: {F.cross_entropy(self.network_inner[i_domain](x), y)}")
+
+        # After certain rounds, we lkd once
+        if (self.u_count % self.lkd_update) == (self.lkd_update - 1):
+            self.cag(
+                minibatches=minibatches,
+                network_inner=self.network_inner,
+                lr_meta=self.hparams["meta_lr"],
+            )
+        else:
+            pass
+        self.u_count += 1
+        return {'loss': loss.item()}
+
+    def predict(self, x):
+        return self.network(x)
+
+
+class UKIE(Algorithm):
+    """
+    Implementation of LKD, as seen in Label-driven Knowledge Distillation.
+    No uda_device allowed in this algorithm currently.
+    """
+
+    def __init__(self, input_shape, num_classes, num_domains, hparams):
+        super(UKIE, self).__init__(input_shape, num_classes, num_domains,
+                                   hparams)
+        self.input_shape = input_shape
+        self.num_classes = num_classes
+        self.num_domains = num_domains
+        self.network = networks.WholeFish(input_shape, num_classes, hparams)
+        self.optimizer = torch.optim.Adam(
+            self.network.parameters(),
+            lr=self.hparams["lr"],
+            weight_decay=self.hparams['weight_decay']
+        )
+        self.lkd_epoch = self.hparams["cag_epoch"]
+        self.alpha = self.hparams['alpha']
+        self.lkd_update = self.hparams['cag_update']
+        self.optimizer_inner_state = None
+        self.network_inner = []
+        self.optimizer_inner = []
+        self.u_count = 0
+        self.w_count = 0
+        self.lkd_bs = 64
+        self.all_x = None
+        self.all_y = None
+
+    def create_clone(self, device, n_domain):
+        if self.u_count == 0:
+            self.network_inner = []
+            self.optimizer_inner = []
+            for i_domain in range(n_domain):
+                self.network_inner.append(networks.WholeFish(self.input_shape, self.num_classes, self.hparams,
+                                                             weights=self.network.state_dict()).to(device))
+                self.optimizer_inner.append(torch.optim.Adam(
+                    self.network_inner[i_domain].parameters(),
+                    lr=self.hparams["lr"],
+                    weight_decay=self.hparams['weight_decay']
+                ))
+                if self.optimizer_inner_state is not None:
+                    self.optimizer_inner[i_domain].load_state_dict(self.optimizer_inner_state[i_domain])
+        else:
+            pass
+
+    def cag(self, minibatches, network_inner, lr_meta):
+        pass
+
+    def update(self, minibatches, unlabeled=None):
+        self.create_clone(minibatches[0][0].device, n_domain=self.num_domains)
+        print(self.u_count)
+        for i_domain, (x, y) in enumerate(minibatches):
+            loss = F.cross_entropy(self.network_inner[i_domain](x), y)
+            self.optimizer_inner[i_domain].zero_grad()
+            loss.backward()
+            self.optimizer_inner[i_domain].step()
+            print(f"domain: {i_domain}|before: {loss}|after: {F.cross_entropy(self.network_inner[i_domain](x), y)}")
+
+        # After certain rounds, we lkd once
+        if (self.u_count % self.lkd_update) == (self.lkd_update - 1):
+            self.cag(
+                minibatches=minibatches,
+                network_inner=self.network_inner,
+                lr_meta=self.hparams["meta_lr"],
+            )
+        else:
+            pass
+        self.u_count += 1
         return {'loss': loss.item()}
 
     def predict(self, x):

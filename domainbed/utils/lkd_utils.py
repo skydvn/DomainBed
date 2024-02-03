@@ -6,26 +6,51 @@ from scipy.special import softmax
 
 
 class CReliability:
-    def __init__(self, data_x, data_y, num_domain, num_classes, teacher_model):
+    def __init__(self, data_loader, num_domain, num_classes, teacher_model):
         self.num_classes = num_classes
         # Data Preprocessing
-        self.data_x = data_x
-        self.data_y = F.one_hot(data_y, num_classes=self.num_classes).to('cpu').numpy()
+        self.data_loader = data_loader
         self.num_domain = num_domain
         self.teacher_model = teacher_model
         self.weighting_temperature = 20
         self.teacher_class_score = self.scoringAUC()
 
+    # def scoringAUC(self):
+    #     teacher_class_score = []
+    #     for i_domain in range(self.num_domain):
+    #         predictions = self.teacher_model[i_domain](self.data_x)
+    #
+    #         rounded_predictions = torch.argmax(predictions, axis=-1)
+    #         rounded_predictions_oh = F.one_hot(rounded_predictions, num_classes=self.num_classes).to('cpu').numpy()
+    #
+    #         teacher_class_score.append(
+    #             roc_auc_score(self.data_y, rounded_predictions_oh, average=None, multi_class="ovr"))
+    #     return teacher_class_score
+
     def scoringAUC(self):
         teacher_class_score = []
         for i_domain in range(self.num_domain):
-            predictions = self.teacher_model[i_domain](self.data_x)
+            all_predictions = []
+            all_true_labels = []
 
-            rounded_predictions = torch.argmax(predictions, axis=-1)
-            rounded_predictions_oh = F.one_hot(rounded_predictions, num_classes=self.num_classes).to('cpu').numpy()
+            # Assuming self.data_x is a DataLoader or similar object that loads data in batches
+            for x_batch, y_batch in self.data_loader:
+                predictions = self.teacher_model[i_domain](x_batch)
+                y_batch = F.one_hot(y_batch, num_classes=self.num_classes).to('cpu').numpy()
 
-            teacher_class_score.append(
-                roc_auc_score(self.data_y, rounded_predictions_oh, average=None, multi_class="ovr"))
+                # Convert to probabilities if predictions are logits
+                probabilities = F.softmax(predictions, dim=-1)
+
+                all_predictions.append(probabilities.detach().cpu().numpy())
+                all_true_labels.append(y_batch)
+
+            # Concatenate all batch results
+            all_predictions = np.concatenate(all_predictions, axis=0)
+            all_true_labels = np.concatenate(all_true_labels, axis=0)
+
+            # Compute AUC-ROC score for each class and store it
+            auc_scores = roc_auc_score(all_true_labels, all_predictions, average=None, multi_class="ovr")
+            teacher_class_score.append(auc_scores)
         return teacher_class_score
 
     def weightedClass(self):
@@ -37,6 +62,7 @@ class CReliability:
         for class_index in range(self.num_classes):
             teacher_class_score_softmax.append(
                 softmax(teacher_class_score_transpose[class_index] * self.weighting_temperature))
+
         return np.transpose(teacher_class_score_softmax)
 
 
