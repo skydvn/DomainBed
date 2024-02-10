@@ -265,7 +265,7 @@ class FEncoder(nn.Module):
             nn.BatchNorm2d(self.hid2_channel),
         )
         self.conv_hid2 = nn.Sequential(
-            nn.Conv2d(self.hid2_channel, self.hid2_channel, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(self.hid2_channel, self.hid2_channel, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.BatchNorm2d(self.hid2_channel),
         )
@@ -327,12 +327,12 @@ class Aux_Decoder(nn.Module):
             nn.BatchNorm2d(64),
         )
         self.up_hid1 = nn.Sequential(
-            nn.Conv2d(self.hid1_channel, self.hid1_channel, kernel_size=3, stride=2, padding=1),
+            nn.ConvTranspose2d(self.hid1_channel, self.hid1_channel, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.BatchNorm2d(self.hid1_channel),
         )
         self.up_hid2 = nn.Sequential(
-            nn.Conv2d(self.hid1_channel, self.hid2_channel, kernel_size=3, stride=2, padding=1),
+            nn.ConvTranspose2d(self.hid1_channel, self.hid2_channel, kernel_size=3, stride=2, padding=1, output_padding=1),
             nn.ReLU(),
             nn.BatchNorm2d(self.hid2_channel),
         )

@@ -597,8 +597,8 @@ class UKIE(Algorithm):
         if (self.u_count % (self.ukie_update + self.mid_update)) < self.ukie_update:
             for i_domain, (x, y) in enumerate(minibatches):
                 logits, rec, inv_enc, var_enc = self.network_inner[i_domain](x)
-                print(f"logits: {logits.size()}| rec: {rec.size()}| ori: {x.size()}"
-                      f"inv_enc: {inv_enc.size()}| var_enc: {var_enc.size()}")
+                # print(f"logits: {logits.size()}| rec: {rec.size()}| ori: {x.size()}"
+                #       f"inv_enc: {inv_enc.size()}| var_enc: {var_enc.size()}")
                 ov_loss_dict = self.criterion(logits, rec, inv_enc, var_enc, x, y)
                 self.ukie_optimizer_inner[i_domain].zero_grad()
                 ov_loss_dict["total_loss"].backward()
@@ -624,7 +624,7 @@ class UKIE(Algorithm):
                 if i_domain == j_domain:
                     pass
                 else:
-                    test_logits, test_rec, test_inv, test_var, test_mu, test_logvar = self.network_inner[j_domain](test_imgs)
+                    test_logits, test_rec, test_inv, test_var = self.network_inner[j_domain](test_imgs)
                     test_loss_dict = self.criterion(test_logits, test_rec,
                                                test_inv, test_var,
                                                test_imgs, test_labels)
