@@ -23,12 +23,16 @@ class UKIELoss(nn.Module):
                  dis_loss: str = None):
         super().__init__()
 
+        self.rec_coeff = 1
+        self.inv_coeff = 0.25
+        self.var_coeff = 0.1
+        self.cls_coeff = 1
         self.rec_loss = nn.MSELoss() if not rec_loss else loss_mapping[rec_loss]
         self.cls_loss = nn.CrossEntropyLoss() if not cls_loss else loss_mapping[cls_loss]
         self.dis_loss = nn.KLDivLoss() if not dis_loss else loss_mapping[dis_loss]
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu", index=0)
 
-    def forward(self, args, logits, rec, inv, var, img, label):
+    def forward(self, logits, rec, inv, var, img, label):
         cls_loss = self.cls_loss(logits, label)
         rec_loss = self.rec_loss(rec, img)
         psnr_val = 20 * torch.log10(torch.max(img) / torch.sqrt(rec_loss))
@@ -52,13 +56,13 @@ class UKIELoss(nn.Module):
         inv_loss = inv_loss / len(u_label)
         var_loss = var_loss / len(u_label)
 
-        total_loss = args.rec_coeff * rec_loss + \
-                     args.inv_coeff * inv_loss + \
-                     args.var_coeff * var_loss + \
-                     args.cls_coeff * cls_loss
+        total_loss = self.rec_coeff * rec_loss + \
+                     self.inv_coeff * inv_loss + \
+                     self.var_coeff * var_loss + \
+                     self.cls_coeff * cls_loss
 
-        irep_loss = args.inv_coeff * inv_loss + \
-                    args.cls_coeff * cls_loss
+        irep_loss = self.inv_coeff * inv_loss + \
+                    self.cls_coeff * cls_loss
 
         return {
             "cls_loss": cls_loss,

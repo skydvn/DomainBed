@@ -11,7 +11,7 @@ import numpy as np
 from collections import OrderedDict
 
 from domainbed.utils.lkd_utils import CReliability, dataAlignment
-from utils.ukie_utils import *
+from .utils.ukie_utils import *
 
 try:
     from backpack import backpack, extend
@@ -498,6 +498,7 @@ class UKIE(Algorithm):
     def __init__(self, input_shape, num_classes, num_domains, hparams):
         super(UKIE, self).__init__(input_shape, num_classes, num_domains,
                                    hparams)
+
         self.input_shape = input_shape
         self.num_classes = num_classes
         self.num_domains = num_domains
@@ -551,7 +552,7 @@ class UKIE(Algorithm):
             for i_domain in range(n_domain):
                 self.network_inner.append(networks.WholeUKIE(self.input_shape, self.num_classes, self.hparams,
                                                              weights=self.network.state_dict()).to(device))
-                self.aux_optimizer_inner.append(torch.optim.Adam(
+                self.mid_optimizer_inner.append(torch.optim.Adam(
                     [
                         {'params': self.network_inner[i_domain].inv.parameters()},
                         {'params': self.network_inner[i_domain].aux_classifier.parameters()}
@@ -588,24 +589,57 @@ class UKIE(Algorithm):
     def update(self, minibatches, unlabeled=None):
         self.create_clone(minibatches[0][0].device, n_domain=self.num_domains)
         """
-        self.ukie_update: epochs that train inv-var generator
-        self.irep_update: epochs that train invariant discriminator
-        if 0           < step < ukie_update              --> UKIE generator step
-        if ukie_update < step < mid_update + ukie_update --> MID discriminator step
+        - self.ukie_update: epochs that train inv-var generator
+        - self.irep_update: epochs that train invariant discriminator
+        - if 0           < step < ukie_update              --> UKIE generator step
+        - if ukie_update < step < mid_update + ukie_update --> MID discriminator step
         """
         if (self.u_count % (self.ukie_update + self.mid_update)) < self.ukie_update:
             for i_domain, (x, y) in enumerate(minibatches):
                 logits, rec, inv_enc, var_enc = self.network_inner[i_domain](x)
-                print(f"logits: {logits.size()}| rec: {rec.size()}| "
+                print(f"logits: {logits.size()}| rec: {rec.size()}| ori: {x.size()}"
                       f"inv_enc: {inv_enc.size()}| var_enc: {var_enc.size()}")
-                ov_loss_dict = self.criterion(args, logits, rec, inv, var, x, y)
+                ov_loss_dict = self.criterion(logits, rec, inv_enc, var_enc, x, y)
                 self.ukie_optimizer_inner[i_domain].zero_grad()
                 ov_loss_dict["total_loss"].backward()
                 self.ukie_optimizer_inner[i_domain].step()
         else:
-            pass
+            for i_domain, (x, y) in enumerate(minibatches):
+                logits, rec, inv_enc, var_enc = self.network_inner[i_domain](x)
+                ov_loss_dict = self.criterion(logits, rec, inv_enc, var_enc, x, y)
+                self.mid_optimizer_inner[i_domain].zero_grad()
+                ov_loss_dict["irep_loss"].backward()
+                self.mid_optimizer_inner[i_domain].step()
+        """
+        - Use domain i to validate on domain j (j \neq i) 
+        - Write on all domain?
+        """
+        test_a_result = [0] * self.num_domains
+        test_i_result = [0] * self.num_domains
+        correct = [0] * self.num_domains
+        total = [0] * self.num_domains
+        inv_loss = [0] * self.num_domains
+        for i_domain, (test_imgs, test_labels) in enumerate(minibatches):
+            for j_domain, (_, _) in enumerate(minibatches):
+                if i_domain == j_domain:
+                    pass
+                else:
+                    test_logits, test_rec, test_inv, test_var, test_mu, test_logvar = self.network_inner[j_domain](test_imgs)
+                    test_loss_dict = self.criterion(test_logits, test_rec,
+                                               test_inv, test_var,
+                                               test_imgs, test_labels)
+                    _, predicted = test_logits.max(1)
+                    total[j_domain] += test_labels.size(0)
+                    correct[j_domain] += predicted.eq(test_labels).sum().item()
+                    inv_loss[j_domain] += test_loss_dict["inv_loss"].item()
+
+        for j_domain, (_, _) in enumerate(minibatches):
+            test_a_result[j_domain] += correct[j_domain] * 100 / total[j_domain]
+            test_i_result[j_domain] += inv_loss[j_domain] * 100 / total[j_domain]
+
         self.u_count += 1
-        return {'loss': loss.item()}
+        return {'accuracy': test_a_result,
+                'inv_loss': test_i_result}
 
     def ukie_loss(self, x):
         pass
