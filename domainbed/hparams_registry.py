@@ -74,6 +74,9 @@ def _hparams(algorithm, dataset, random_seed):
         _hparam('aux_dec_hid2_channel', 32, lambda r: r.choice([32, 32, 32]))
         # Aux Classifier settings
         _hparam('aux_cls_hid_channel', 32, lambda r: r.choice([32, 32, 32]))
+        # Hyper Parameters
+        _hparam('ukie_update', 1, lambda r: r.choice([1, 2, 5]))
+        _hparam('mid_update', 1, lambda r: r.choice([1, 2, 5]))
 
     elif algorithm == 'CAG':
         _hparam('meta_lr', 0.5, lambda r: r.choice([0.05, 0.1, 0.5]))

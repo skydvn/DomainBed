@@ -527,6 +527,8 @@ class UKIE(Algorithm):
             lr=self.hparams["lr"],
             weight_decay=self.hparams['weight_decay']
         )
+        self.ukie_update = self.hparams['ukie_update']
+        self.mid_update = self.hparams['mid_update']
         self.optimizer_inner_state = None
         self.network_inner = []
         self.aux_optimizer_inner = []
@@ -579,16 +581,26 @@ class UKIE(Algorithm):
 
     def update(self, minibatches, unlabeled=None):
         self.create_clone(minibatches[0][0].device, n_domain=self.num_domains)
-        for i_domain, (x, y) in enumerate(minibatches):
-            logits, rec, inv_enc, var_enc = self.network_inner[i_domain](x)
-            print(f"logits: {logits}| rec: {rec}| inv_enc: {inv_enc}| var_enc: {var_enc}")
-        # After certain rounds, we lkd once
-        if (self.u_count % self.lkd_update) == (self.lkd_update - 1):
-            pass
+        """
+        self.ukie_update: epochs that train inv-var generator
+        self.irep_update: epochs that train invariant discriminator
+        """
+        if (self.u_count % (self.ukie_update + self.mid_update)) < self.ukie_update:
+            for i_domain, (x, y) in enumerate(minibatches):
+                logits, rec, inv_enc, var_enc = self.network_inner[i_domain](x)
+                print(f"logits: {logits.size()}| rec: {rec.size()}| "
+                      f"inv_enc: {inv_enc.size()}| var_enc: {var_enc.size()}")
+                ov_loss_dict = criterion(args, logits, rec, inv, var, x, y, mu, logvar)
+                ukie_optimizer.zero_grad()
+                ov_loss_dict["total_loss"].backward()
+                ukie_optimizer.step()
         else:
             pass
         self.u_count += 1
         return {'loss': loss.item()}
+
+    def ukie_loss(self, x):
+        pass
 
     def predict(self, x):
         return self.network(x)
