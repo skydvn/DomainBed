@@ -11,6 +11,7 @@ import numpy as np
 from collections import OrderedDict
 
 from domainbed.utils.lkd_utils import CReliability, dataAlignment
+from utils.ukie_utils import *
 
 try:
     from backpack import backpack, extend
@@ -501,6 +502,7 @@ class UKIE(Algorithm):
         self.num_classes = num_classes
         self.num_domains = num_domains
         self.network = networks.WholeUKIE(input_shape, num_classes, hparams)
+        self.criterion = UKIELoss()
         self.ukie_optimizer = torch.optim.Adam(
             [
                 {'params': self.network.encoder.parameters()},
@@ -511,7 +513,7 @@ class UKIE(Algorithm):
             lr=self.hparams["lr"],
             weight_decay=self.hparams['weight_decay']
         )
-        self.aux_optimizer = torch.optim.Adam(
+        self.mid_optimizer = torch.optim.Adam(
             [
                 {'params': self.network.inv.parameters()},
                 {'params': self.network.aux_classifier.parameters()}
@@ -519,6 +521,9 @@ class UKIE(Algorithm):
             lr=self.hparams["lr"],
             weight_decay=self.hparams['weight_decay']
         )
+        """
+        UKIE fix the enc/inv/var -> focus on training the featurizer and classifier
+        """
         self.ukie_dog_optimizer = torch.optim.Adam(
             [
                 {'params': self.network.featurizer.parameters()},
@@ -531,9 +536,9 @@ class UKIE(Algorithm):
         self.mid_update = self.hparams['mid_update']
         self.optimizer_inner_state = None
         self.network_inner = []
-        self.aux_optimizer_inner = []
+        self.mid_optimizer_inner = []
         self.ukie_optimizer_inner = []
-        self.ukie_dog_optimizer_inner = []
+        self.dog_optimizer_inner = []
         self.u_count = 0
         self.all_x = None
         self.all_y = None
@@ -542,6 +547,7 @@ class UKIE(Algorithm):
         if self.u_count == 0:
             self.network_inner = []
             self.ukie_optimizer_inner = []
+            self.mid_optimizer_inner = []
             for i_domain in range(n_domain):
                 self.network_inner.append(networks.WholeUKIE(self.input_shape, self.num_classes, self.hparams,
                                                              weights=self.network.state_dict()).to(device))
@@ -563,7 +569,7 @@ class UKIE(Algorithm):
                     lr=self.hparams["lr"],
                     weight_decay=self.hparams['weight_decay']
                 ))
-                self.ukie_dog_optimizer_inner.append(torch.optim.Adam(
+                self.dog_optimizer_inner.append(torch.optim.Adam(
                     [
                         {'params': self.network_inner[i_domain].featurizer.parameters()},
                         {'params': self.network_inner[i_domain].classifier.parameters()},
@@ -584,16 +590,18 @@ class UKIE(Algorithm):
         """
         self.ukie_update: epochs that train inv-var generator
         self.irep_update: epochs that train invariant discriminator
+        if 0           < step < ukie_update              --> UKIE generator step
+        if ukie_update < step < mid_update + ukie_update --> MID discriminator step
         """
         if (self.u_count % (self.ukie_update + self.mid_update)) < self.ukie_update:
             for i_domain, (x, y) in enumerate(minibatches):
                 logits, rec, inv_enc, var_enc = self.network_inner[i_domain](x)
                 print(f"logits: {logits.size()}| rec: {rec.size()}| "
                       f"inv_enc: {inv_enc.size()}| var_enc: {var_enc.size()}")
-                ov_loss_dict = criterion(args, logits, rec, inv, var, x, y, mu, logvar)
-                ukie_optimizer.zero_grad()
+                ov_loss_dict = self.criterion(args, logits, rec, inv, var, x, y)
+                self.ukie_optimizer_inner[i_domain].zero_grad()
                 ov_loss_dict["total_loss"].backward()
-                ukie_optimizer.step()
+                self.ukie_optimizer_inner[i_domain].step()
         else:
             pass
         self.u_count += 1
